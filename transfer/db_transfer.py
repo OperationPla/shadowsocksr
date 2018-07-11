@@ -1,7 +1,4 @@
-﻿#!/usr/bin/python
-# -*- coding: UTF-8 -*-
-
-import sys
+﻿import sys
 import time
 import logging
 import traceback
@@ -29,61 +26,6 @@ class TransferBase(object):
         self.onlineuser_cache = lru_cache.LRUCache(timeout=60 * 30)  # 用户在线状态记录
         self.pull_ok = False  # 记录是否已经拉出过数据
         self.mu_ports = {}
-
-    def load_cfg(self):
-        pass
-
-    def push_db_all_user(self):
-        if self.pull_ok is False:
-            return
-        # 更新用户流量到数据库
-        last_transfer = self.last_update_transfer
-        curr_transfer = ServerPool.get_instance().get_servers_transfer()
-        # 上次和本次的增量
-        dt_transfer = {}
-        for id in self.force_update_transfer:  # 此表中的用户统计上次未计入的流量
-            if id in self.last_get_transfer and id in last_transfer:
-                dt_transfer[id] = [self.last_get_transfer[id][0] - last_transfer[id]
-                                   [0], self.last_get_transfer[id][1] - last_transfer[id][1]]
-
-        for id in curr_transfer.keys():
-            if id in self.force_update_transfer or id in self.mu_ports:
-                continue
-            # 算出与上次记录的流量差值，保存于dt_transfer表
-            if id in last_transfer:
-                if curr_transfer[id][0] + curr_transfer[id][1] - last_transfer[id][0] - last_transfer[id][1] <= 0:
-                    continue
-                dt_transfer[id] = [curr_transfer[id][0] - last_transfer[id][0],
-                                   curr_transfer[id][1] - last_transfer[id][1]]
-            else:
-                if curr_transfer[id][0] + curr_transfer[id][1] <= 0:
-                    continue
-                dt_transfer[id] = [curr_transfer[id][0], curr_transfer[id][1]]
-
-            # 有流量的，先记录在线状态
-            if id in self.last_get_transfer:
-                if curr_transfer[id][0] + curr_transfer[id][1] > self.last_get_transfer[id][0] + self.last_get_transfer[id][1]:
-                    self.onlineuser_cache[id] = curr_transfer[id][0] + \
-                        curr_transfer[id][1]
-            else:
-                self.onlineuser_cache[id] = curr_transfer[id][0] + \
-                    curr_transfer[id][1]
-
-        self.onlineuser_cache.sweep()
-
-        update_transfer = self.update_all_user(dt_transfer)  # 返回有更新的表
-        for id in update_transfer.keys():  # 其增量加在此表
-            if id not in self.force_update_transfer:  # 但排除在force_update_transfer内的
-                last = self.last_update_transfer.get(id, [0, 0])
-                self.last_update_transfer[id] = [
-                    last[0] + update_transfer[id][0], last[1] + update_transfer[id][1]]
-        self.last_get_transfer = curr_transfer
-        for id in self.force_update_transfer:
-            if id in self.last_update_transfer:
-                del self.last_update_transfer[id]
-            if id in self.last_get_transfer:
-                del self.last_get_transfer[id]
-        self.force_update_transfer = set()
 
     def del_server_out_of_bound_safe(self, last_rows, rows):
         # 停止超流量的服务
@@ -250,7 +192,6 @@ class TransferBase(object):
     @staticmethod
     def thread_db(obj):
         import socket
-        import time
         global db_instance
         timeout = 60
         socket.setdefaulttimeout(timeout)
@@ -288,10 +229,9 @@ class TransferBase(object):
                             rows.append(val)
                     db_instance.del_server_out_of_bound_safe(last_rows, rows)
                     last_rows = rows
-                except Exception as e:
+                except:
                     trace = traceback.format_exc()
                     logging.error(trace)
-                    #logging.warn('db thread except:%s' % e)
                 if db_instance.event.wait(get_config().UPDATE_TIME) or not ServerPool.get_instance().thread.is_alive():
                     break
         except KeyboardInterrupt as e:
@@ -306,63 +246,13 @@ class TransferBase(object):
         db_instance.event.set()
 
 
-class MuJsonTransfer(TransferBase):
+class EhcoDbTransfer(TransferBase):
     def __init__(self):
-        super(MuJsonTransfer, self).__init__()
-
-    def update_all_user(self, dt_transfer):
-        import json
-        rows = None
-
-        config_path = get_config().MUDB_FILE
-        with open(config_path, 'rb+') as f:
-            rows = json.loads(f.read().decode('utf8'))
-            for row in rows:
-                if "port" in row:
-                    port = row["port"]
-                    if port in dt_transfer:
-                        row["u"] += dt_transfer[port][0]
-                        row["d"] += dt_transfer[port][1]
-
-        if rows:
-            output = json.dumps(rows, sort_keys=True,
-                                indent=4, separators=(',', ': '))
-            with open(config_path, 'r+') as f:
-                f.write(output)
-                f.truncate()
-
-        return dt_transfer
-
-    def pull_db_all_user(self):
-        import json
-        rows = None
-
-        config_path = get_config().MUDB_FILE
-        with open(config_path, 'rb+') as f:
-            rows = json.loads(f.read().decode('utf8'))
-            for row in rows:
-                try:
-                    if 'forbidden_ip' in row:
-                        row['forbidden_ip'] = common.IPNetwork(
-                            row['forbidden_ip'])
-                except Exception as e:
-                    logging.error(e)
-                try:
-                    if 'forbidden_port' in row:
-                        row['forbidden_port'] = common.PortRange(
-                            row['forbidden_port'])
-                except Exception as e:
-                    logging.error(e)
-
-        if not rows:
-            logging.warn('no user in json file')
-        return rows
-
-
-class DbTransfer(TransferBase):
-    def __init__(self):
-        super(DbTransfer, self).__init__()
+        super(EhcoDbTransfer, self).__init__()
         self.user_pass = {}  # 记录更新此用户流量时被跳过多少次
+        self.start_time = time.time()
+        self.ss_node_info_name = 'ss_node_info_log'
+        self.key_list += ['id', 'method', 'obfs', 'protocol']
         self.cfg = {
             "host": "127.0.0.1",
             "port": 3306,
@@ -387,71 +277,6 @@ class DbTransfer(TransferBase):
         if cfg:
             self.cfg.update(cfg)
 
-    def update_all_user(self, dt_transfer):
-        import cymysql
-        update_transfer = {}
-
-        query_head = 'UPDATE user'
-        query_sub_when = ''
-        query_sub_when2 = ''
-        query_sub_in = None
-        last_time = time.time()
-
-        for id in dt_transfer.keys():
-            transfer = dt_transfer[id]
-            # 小于最低更新流量的先不更新
-            update_trs = 1024 * (2048 - self.user_pass.get(id, 0) * 64)
-            if transfer[0] + transfer[1] < update_trs and id not in self.force_update_transfer:
-                self.user_pass[id] = self.user_pass.get(id, 0) + 1
-                continue
-            if id in self.user_pass:
-                del self.user_pass[id]
-
-            query_sub_when += ' WHEN %s THEN u+%s' % (
-                id, int(transfer[0] * self.cfg["transfer_mul"]))
-            query_sub_when2 += ' WHEN %s THEN d+%s' % (
-                id, int(transfer[1] * self.cfg["transfer_mul"]))
-            update_transfer[id] = transfer
-
-            if query_sub_in is not None:
-                query_sub_in += ',%s' % id
-            else:
-                query_sub_in = '%s' % id
-
-        if query_sub_when == '':
-            return update_transfer
-        query_sql = query_head + ' SET u = CASE port' + query_sub_when + \
-            ' END, d = CASE port' + query_sub_when2 + \
-            ' END, t = ' + str(int(last_time)) + \
-            ' WHERE port IN (%s)' % query_sub_in
-        if self.cfg["ssl_enable"] == 1:
-            conn = cymysql.connect(host=self.cfg["host"], port=self.cfg["port"],
-                                   user=self.cfg["user"], passwd=self.cfg["password"],
-                                   db=self.cfg["db"], charset='utf8',
-                                   ssl={'ca': self.cfg["ssl_ca"], 'cert': self.cfg["ssl_cert"], 'key': self.cfg["ssl_key"]})
-        else:
-            conn = cymysql.connect(host=self.cfg["host"], port=self.cfg["port"],
-                                   user=self.cfg["user"], passwd=self.cfg["password"],
-                                   db=self.cfg["db"], charset='utf8')
-
-        try:
-            cur = conn.cursor()
-            try:
-                cur.execute(query_sql)
-            except Exception as e:
-                logging.error(e)
-                update_transfer = {}
-
-            cur.close()
-            conn.commit()
-        except Exception as e:
-            logging.error(e)
-            update_transfer = {}
-        finally:
-            conn.close()
-
-        return update_transfer
-
     def pull_db_all_user(self):
         import cymysql
         # 数据库所有用户信息
@@ -473,32 +298,6 @@ class DbTransfer(TransferBase):
         if not rows:
             logging.warn('no user in db')
         return rows
-
-    def pull_db_users(self, conn):
-        try:
-            switchrule = importloader.load('switchrule')
-            keys = switchrule.getKeys(self.key_list)
-        except Exception as e:
-            keys = self.key_list
-
-        cur = conn.cursor()
-        cur.execute("SELECT " + ','.join(keys) + " FROM user")
-        rows = []
-        for r in cur.fetchall():
-            d = {}
-            for column in range(len(keys)):
-                d[keys[column]] = r[column]
-            rows.append(d)
-        cur.close()
-        return rows
-
-
-class EhcoDbTransfer(DbTransfer):
-    def __init__(self):
-        super(EhcoDbTransfer, self).__init__()
-        self.ss_node_info_name = 'ss_node_info_log'
-        self.start_time = time.time()
-        self.key_list += ['id', 'method', 'obfs', 'protocol']
 
     def update_all_user(self, dt_transfer):
         import cymysql
