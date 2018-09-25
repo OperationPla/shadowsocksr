@@ -3,13 +3,6 @@ ssr mod version for django-sspanel
 
 # dev 分支正在开发，线上请用master分支！
 
-### 版本说明
-
-改版ssr在原版的基础上加了点小功能
-并且只对django——sspanel进行支持和维护
-
->django-sspanel 是我开发的面板
->项目地址：https://github.com/Ehco1996/django-sspanel
 
 * 节点流量日志上报
 * 节点在线ip统计
@@ -21,11 +14,7 @@ ssr mod version for django-sspanel
 
 
 * 克隆项目到本地
-
-`git clone https://github.com/Ehco1996/shadowsocksr.git`
-
 * 安装依赖
-
 ```sh
 wget https://bootstrap.pypa.io/get-pip.py
 
